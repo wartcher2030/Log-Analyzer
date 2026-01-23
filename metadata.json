@@ -1,0 +1,5 @@
+{
+  "name": "OmniLog Dashboard",
+  "description": "A high-performance multi-CSV dashboard for engineering log analysis with automated statistics, customizable plot templates, and professional export capabilities.",
+  "requestFramePermissions": []
+}
