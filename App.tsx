@@ -1,9 +1,11 @@
 
 import React, { useState, useMemo } from 'react';
 import LazyChart from './components/LazyChart';
-import { LogData, PlotTemplate, Page, PlotAnnotation, FormulaDefinition } from './types';
-import { parseCSV, calculateStats } from './services/dataParser';
+import { LogData, PlotTemplate, Page, PlotAnnotation, FormulaDefinition, FileUploadProgress } from './types';
+import { parseCSV, parseMultipleFiles, calculateStats } from './services/dataParser';
 import { applyFormulas } from './services/formulaEngine';
+import { useLocalStorage } from './services/database';
+import { renderChartToCanvas, downloadCanvasAs } from './services/exportService';
 
 const INITIAL_TEMPLATES: PlotTemplate[] = [
   { id: 'st_1', name: 'Altitude Stability', xAxis: 'Flight Time_raw', yAxes: ['Altitude', 'Desired Altitude'], title: 'Altitude vs Flight Time', chartType: 'line', strokeWidth: 2, showGrid: true, xAxisLabel: 'Time (s)', yAxisLabel: 'Altitude (m)' },
@@ -18,6 +20,13 @@ export default function App() {
   const [templates, setTemplates] = useState<PlotTemplate[]>(INITIAL_TEMPLATES);
   const [logTemplateMap, setLogTemplateMap] = useState<Record<string, string>>({});
   const [customDashboardTitles, setCustomDashboardTitles] = useState<Record<string, string>>({});
+  const [appName, setAppName] = useState<string>('IdeaLogs');
+  const [isEditingAppName, setIsEditingAppName] = useState<boolean>(false);
+  
+  // File upload state
+  const [uploadProgress, setUploadProgress] = useState<FileUploadProgress[]>([]);
+  const [uploadError, setUploadError] = useState<string>('');
+  const [isUploading, setIsUploading] = useState(false);
   
   // Project Plotter State
   const [selectedLogId, setSelectedLogId] = useState<string>('');
@@ -53,10 +62,73 @@ export default function App() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
+    
+    setIsUploading(true);
+    setUploadError('');
     const files = Array.from(e.target.files) as File[];
-    const parsed = await Promise.all(files.map(async f => await parseCSV(f)));
-    setLogs(prev => [...prev, ...parsed]);
-    if (!selectedLogId && parsed.length > 0) setSelectedLogId(parsed[0].id);
+
+    try {
+      // Initialize progress tracking for all files
+      setUploadProgress(files.map((f, idx) => ({
+        fileIndex: idx,
+        fileName: f.name,
+        progress: 0,
+        status: 'pending' as const
+      })));
+
+      const result = await parseMultipleFiles(files, (fileIndex, progress) => {
+        setUploadProgress(prev => {
+          const updated = [...prev];
+          updated[fileIndex].progress = progress;
+          if (progress === 100) {
+            updated[fileIndex].status = 'success';
+          } else {
+            updated[fileIndex].status = 'loading';
+          }
+          return updated;
+        });
+      });
+
+      // Handle successful uploads
+      if (result.successful.length > 0) {
+        setLogs(prev => [...prev, ...result.successful]);
+        if (!selectedLogId && result.successful.length > 0) {
+          setSelectedLogId(result.successful[0].id);
+        }
+      }
+
+      // Handle failures
+      if (result.failed.length > 0) {
+        const errorSummary = result.failed
+          .map(f => `${f.fileName}: ${f.error}`)
+          .join('\n');
+        
+        setUploadProgress(prev => prev.map((p, idx) => {
+          const failedFile = result.failed.find(f => f.fileName === p.fileName);
+          return failedFile 
+            ? { ...p, status: 'error' as const, error: failedFile.error }
+            : p;
+        }));
+
+        if (result.successful.length === 0) {
+          setUploadError(`Failed to upload ${result.failed.length} file(s):\n${errorSummary}`);
+        } else {
+          setUploadError(`${result.successful.length} file(s) uploaded, but ${result.failed.length} failed:\n${errorSummary}`);
+        }
+      } else {
+        // Clear progress after successful completion
+        setTimeout(() => {
+          setUploadProgress([]);
+        }, 2000);
+      }
+    } catch (error) {
+      setUploadError(`Upload failed: ${String(error).substring(0, 100)}`);
+      setUploadProgress(prev => prev.map(p => ({ ...p, status: 'error' as const })));
+    } finally {
+      setIsUploading(false);
+      // Reset input
+      e.target.value = '';
+    }
   };
 
   const handleAddFormula = () => {
@@ -116,40 +188,68 @@ export default function App() {
   };
 
   const exportPlot = async (id: string, format: 'png' | 'jpeg' | 'svg' | 'pdf') => {
-    const node = document.getElementById(`export-container-${id}`);
-    if (!node) return;
     setIsExporting(id);
     try {
-      await new Promise(r => setTimeout(r, 600));
+      // Get the current log and config based on which export triggered
+      let exportLog: LogData | undefined;
+      let exportConfig: Partial<PlotTemplate> | undefined;
+      let exportTitle: string = appName;
       
-      const options = { 
-        quality: 1.0, 
-        backgroundColor: '#ffffff'
-      };
+      if (id === 'project-main') {
+        exportLog = currentLog;
+        exportConfig = plotterConfig;
+        exportTitle = plotterConfig.title || 'Engineering Report';
+      } else {
+        exportLog = logs.find(l => l.id === id);
+        exportConfig = templates.find(t => t.id === logTemplateMap[id]);
+        if (!exportConfig) exportConfig = INITIAL_TEMPLATES[0];
+      }
       
-      let dataUrl = '';
-      // Dynamically import html-to-image so it's code-split and not included in main bundle
-      const htmlToImage = await import('html-to-image');
-      if (format === 'png') dataUrl = await htmlToImage.toPng(node, options);
-      else if (format === 'jpeg') dataUrl = await htmlToImage.toJpeg(node, options);
-      else if (format === 'svg') dataUrl = await htmlToImage.toSvg(node, options);
-      else if (format === 'pdf') {
-        dataUrl = await htmlToImage.toPng(node, options);
-        const win = window.open('', '_blank');
-        if (win) {
-          win.document.write(`<div style="padding:40px; background:#f8fafc; font-family:sans-serif;"><h1 style="font-size:18px; color:#1e293b; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">OmniLog Engineering Report</h1><img src="${dataUrl}" style="width:100%; border:1px solid #e2e8f0; border-radius:12px; margin-top:20px;"></div><script>window.onload = () => { window.print(); window.close(); }</script>`);
-          win.document.close();
-        }
+      if (!exportLog || !exportConfig || !exportConfig.xAxis || !exportConfig.yAxes || exportConfig.yAxes.length === 0) {
+        alert('Please configure plot before exporting');
         setIsExporting(null);
         return;
       }
-      const link = document.createElement('a');
-      link.download = `OmniLog_Report_${id}_${new Date().getTime()}.${format}`;
-      link.href = dataUrl;
-      link.click();
+      
+      // Render professional 4K canvas
+      const canvas = await renderChartToCanvas(
+        exportLog.computedRows,
+        exportConfig,
+        COLORS,
+        appName,
+        exportLog.fileName,
+        3840, // 4K width
+        2160, // 4K height
+        true  // include statistics
+      );
+      
+      // Download based on format
+      const fileName = `${appName}_${exportTitle}_${new Date().toISOString().split('T')[0]}`;
+      
+      if (format === 'pdf') {
+        const { canvasToPDF } = await import('./services/exportService');
+        const pdf = canvasToPDF(canvas, appName, exportTitle, exportLog.fileName);
+        pdf.save(`${fileName}.pdf`);
+      } else if (format === 'png') {
+        const { canvasToPNG } = await import('./services/exportService');
+        const blob = await canvasToPNG(canvas);
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${fileName}.png`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      } else if (format === 'jpeg') {
+        const { canvasToJPEG } = await import('./services/exportService');
+        const blob = await canvasToJPEG(canvas, 0.95);
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${fileName}.jpeg`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      }
     } catch (error) {
       console.error('Export failed', error);
-      alert('Export failed.');
+      alert(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsExporting(null);
     }
@@ -263,9 +363,38 @@ export default function App() {
       )}
 
       <aside className="w-64 bg-slate-900 text-white flex flex-col shrink-0 shadow-2xl z-20">
-        <div className="p-6 flex items-center gap-3 border-b border-slate-800">
-          <div className="w-8 h-8 bg-indigo-500 rounded flex items-center justify-center font-bold text-sm">OP</div>
-          <span className="font-bold text-lg tracking-tight">OmniLog <span className="text-indigo-400">Pro</span></span>
+        <div className="p-6 space-y-4 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-lg flex items-center justify-center font-bold text-base shadow-lg">
+              <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              {isEditingAppName ? (
+                <input
+                  type="text"
+                  value={appName}
+                  onChange={(e) => setAppName(e.target.value)}
+                  onBlur={() => setIsEditingAppName(false)}
+                  onKeyDown={(e) => e.key === 'Enter' && setIsEditingAppName(false)}
+                  autoFocus
+                  className="font-bold text-lg tracking-tight bg-slate-800 text-white rounded px-2 py-1 w-full outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              ) : (
+                <span
+                  onClick={() => setIsEditingAppName(true)}
+                  className="font-bold text-lg tracking-tight text-white cursor-pointer hover:text-indigo-400 transition-colors inline-block truncate"
+                >
+                  {appName}
+                </span>
+              )}
+              <span className="text-indigo-400 text-xs font-semibold block">Analytics</span>
+            </div>
+          </div>
+          {isEditingAppName && (
+            <p className="text-[10px] text-slate-400 italic">Click to edit app name</p>
+          )}
         </div>
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto custom-scrollbar">
           {navItems.map(item => (
@@ -281,12 +410,48 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="p-4 border-t border-slate-800">
-          <label className="flex items-center justify-center gap-2 w-full py-2 bg-slate-800 rounded-md text-xs font-bold cursor-pointer hover:bg-slate-700 transition-colors uppercase">
+        <div className="p-4 border-t border-slate-800 space-y-3">
+          <label className="flex items-center justify-center gap-2 w-full py-2 bg-slate-800 rounded-md text-xs font-bold cursor-pointer hover:bg-slate-700 transition-colors uppercase disabled:opacity-50 disabled:cursor-not-allowed" style={{ pointerEvents: isUploading ? 'none' : 'auto', opacity: isUploading ? 0.6 : 1 }}>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" strokeWidth={2}/></svg>
-            Import Multi-CSV
-            <input type="file" multiple className="hidden" onChange={handleFileUpload} />
+            {isUploading ? 'Uploading...' : 'Import Multi-CSV'}
+            <input type="file" multiple className="hidden" onChange={handleFileUpload} disabled={isUploading} accept=".csv" />
           </label>
+
+          {/* Upload Progress */}
+          {uploadProgress.length > 0 && (
+            <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+              {uploadProgress.map((file) => (
+                <div key={`${file.fileIndex}-${file.fileName}`} className="bg-slate-800 rounded p-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-bold text-slate-300 truncate">{file.fileName}</span>
+                    {file.status === 'success' && <span className="text-[10px] text-emerald-400">✓</span>}
+                    {file.status === 'error' && <span className="text-[10px] text-rose-400">✗</span>}
+                  </div>
+                  <div className="w-full bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-300 ${
+                        file.status === 'error' ? 'bg-rose-500' : 'bg-indigo-500'
+                      }`}
+                      style={{ width: `${file.progress}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Upload Error */}
+          {uploadError && (
+            <div className="bg-rose-950 border border-rose-800 rounded-md p-2">
+              <p className="text-[10px] text-rose-200 font-medium whitespace-pre-wrap">{uploadError}</p>
+              <button
+                onClick={() => setUploadError('')}
+                className="text-[10px] text-rose-300 hover:text-rose-100 mt-1 underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -301,11 +466,11 @@ export default function App() {
           )}
         </header>
 
-        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
           {currentPage === 'dashboard' && (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+            <div className="flex flex-col gap-6 max-w-full">
               {processedLogs.length === 0 ? (
-                <div className="col-span-full h-[60vh] flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-white/40">
+                <div className="w-full h-[70vh] flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-white/40">
                   <h3 className="text-xl font-bold text-slate-600 uppercase tracking-tight">Canvas Empty</h3>
                   <p className="text-sm mt-2 font-medium">Please upload flight/sensor log files to begin analysis.</p>
                 </div>
@@ -316,8 +481,8 @@ export default function App() {
                   const currentTitle = (customDashboardTitles[log.id] || activeTemp.name).toUpperCase();
 
                   return (
-                    <div key={log.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col relative group">
-                      <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <div key={log.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col relative group w-full h-auto">
+                      <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 shrink-0">
                         <div className="flex-1 min-w-0 pr-4">
                           <input 
                             value={currentTitle} 
@@ -345,10 +510,10 @@ export default function App() {
                         </div>
                       </div>
                       
-                      <div id={`export-container-${log.id}`} className="bg-white p-6">
-                        <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2">
+                      <div id={`export-container-${log.id}`} className="bg-white p-6 flex flex-col w-full">
+                        <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2 shrink-0">
                            <div>
-                              <span className="text-[9px] font-black text-indigo-500 uppercase block tracking-widest">OmniLog Pro Analytics</span>
+                              <span className="text-[9px] font-black text-indigo-500 uppercase block tracking-widest">{appName} Analytics</span>
                               <span className="text-[11px] font-bold text-slate-800 uppercase">{log.fileName}</span>
                            </div>
                            <div className="text-right">
@@ -356,7 +521,7 @@ export default function App() {
                            </div>
                         </div>
 
-                        <div className="h-80 relative bg-white">
+                        <div className="w-full h-96 relative bg-white">
                           <LazyChart
                             data={log.computedRows}
                             template={activeTemp}
@@ -368,9 +533,9 @@ export default function App() {
                           />
                         </div>
 
-                        <div className="mt-6 border-t border-slate-100 pt-4 space-y-2">
+                        <div className="mt-6 border-t border-slate-100 pt-4 space-y-2 shrink-0">
                           <h5 className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Automated Statistical Summary</h5>
-                          <div className="grid grid-cols-1 gap-2">
+                          <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto custom-scrollbar">
                             {activeTemp.yAxes.map((y, idx) => {
                                const s = calculateStats(log.computedRows, y);
                                if (!s) return null;
@@ -538,11 +703,11 @@ export default function App() {
 
               {/* Vertical Plot Area Section */}
               <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
+                <div className="flex-1 p-8">
                   <div id="export-container-project-main" className="flex flex-col bg-white capture-container max-w-[1200px] mx-auto">
                     <div className="mb-8 flex justify-between items-start border-b border-slate-100 pb-4">
                        <div className="flex-1 min-w-0 pr-4">
-                          <span className="text-[10px] font-black text-indigo-500 uppercase block tracking-[0.2em] mb-1">OMNILOG PRO ANALYTICS</span>
+                          <span className="text-[10px] font-black text-indigo-500 uppercase block tracking-[0.2em] mb-1">{appName.toUpperCase()} ANALYTICS</span>
                           <h3 className="text-2xl font-bold text-slate-900 tracking-tight leading-tight uppercase truncate">{plotterConfig.title || 'WORKBENCH EXPORT'}</h3>
                           <span className="text-[11px] font-bold text-slate-400 uppercase truncate block mt-1 tracking-wider">{currentLog?.fileName || 'No Data Selected'}</span>
                        </div>
@@ -552,7 +717,7 @@ export default function App() {
                        </div>
                     </div>
 
-                    <div className="w-full aspect-[3/2] rounded-xl mb-12 relative overflow-hidden bg-slate-50/30">
+                    <div className="w-full h-[600px] rounded-xl mb-12 relative overflow-hidden bg-slate-50/30">
                       {currentLog && plotterConfig.xAxis && (plotterConfig.yAxes?.length || 0) > 0 ? (
                         <LazyChart
                           data={currentLog.computedRows}
