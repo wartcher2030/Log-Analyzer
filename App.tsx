@@ -258,7 +258,7 @@ export default function App() {
   const currentAnnos = annotations[selectedLogId] || [];
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden text-slate-900">
+    <div className="flex h-screen bg-slate-50 overflow-auto text-slate-900">
       {/* Formula Help Modal */}
       {showFormulaHelp && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -455,7 +455,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 flex flex-col overflow-auto">
         <header className="h-16 bg-white border-b border-slate-200 px-8 flex items-center justify-between shadow-sm z-10 shrink-0">
           <h2 className="text-sm font-bold text-slate-500 uppercase tracking-widest">{navItems.find(n => n.id === currentPage)?.label}</h2>
           {logs.length > 0 && (
@@ -717,7 +717,7 @@ export default function App() {
                        </div>
                     </div>
 
-                    <div className="w-full h-[600px] rounded-xl mb-12 relative overflow-hidden bg-slate-50/30">
+                    <div className="w-full h-[600px] rounded-xl mb-12 relative overflow-visible bg-slate-50/30">
                       {currentLog && plotterConfig.xAxis && (plotterConfig.yAxes?.length || 0) > 0 ? (
                         <LazyChart
                           data={currentLog.computedRows}
