@@ -255,6 +255,41 @@ export default function App() {
     }
   };
 
+  const captureScreenshot = async (id: string, format: 'png' | 'jpeg' | 'svg') => {
+    setIsExporting(id + '-screenshot');
+    try {
+      const nodeId = id === 'project-main' ? 'export-container-project-main' : `export-container-${id}`;
+      const node = document.getElementById(nodeId);
+      if (!node) { alert('Could not find chart container to capture'); setIsExporting(null); return; }
+
+      await (document as any).fonts?.ready;
+      const htmlToImage = await import('html-to-image');
+      const options: any = { backgroundColor: '#ffffff', quality: 1 };
+
+      // Use explicit width/height to capture full content
+      options.width = node.scrollWidth || node.clientWidth;
+      options.height = node.scrollHeight || node.clientHeight;
+
+      let dataUrl = '';
+      if (format === 'png') dataUrl = await htmlToImage.toPng(node, options);
+      else if (format === 'jpeg') dataUrl = await htmlToImage.toJpeg(node, options);
+      else if (format === 'svg') dataUrl = await htmlToImage.toSvg(node, options);
+
+      if (!dataUrl) throw new Error('Capture failed');
+
+      const link = document.createElement('a');
+      const fileName = `${appName}_${id === 'project-main' ? 'workbench' : 'dashboard'}_${new Date().toISOString().split('T')[0]}_screenshot.${format}`;
+      link.href = dataUrl;
+      link.download = fileName;
+      link.click();
+    } catch (e) {
+      console.error('Screenshot capture failed', e);
+      alert('Screenshot capture failed');
+    } finally {
+      setIsExporting(null);
+    }
+  };
+
   const currentAnnos = annotations[selectedLogId] || [];
 
   return (
@@ -508,6 +543,18 @@ export default function App() {
                             </button>
                           ))}
                         </div>
+                        <div className="flex items-center gap-1 ml-2 bg-white border border-slate-200 rounded-lg p-1 shadow-sm shrink-0">
+                          {['png', 'jpeg', 'svg'].map(fmt => (
+                            <button 
+                              key={fmt}
+                              onClick={() => captureScreenshot(log.id, fmt as any)}
+                              title={`Screenshot ${fmt.toUpperCase()}`}
+                              className="text-[9px] font-extrabold uppercase px-2 py-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-all active:scale-95"
+                            >
+                              S-{fmt}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                       
                       <div id={`export-container-${log.id}`} className="bg-white p-6 flex flex-col w-full">
@@ -685,6 +732,13 @@ export default function App() {
                         {isExporting === 'project-main' ? '...' : fmt}
                       </button>
                     ))}
+                    <div className="flex items-center gap-2">
+                      {['png', 'jpeg', 'svg'].map(fmt => (
+                        <button key={fmt} onClick={() => captureScreenshot('project-main', fmt as any)} className="px-3 py-2 bg-white text-slate-700 rounded-xl text-[10px] font-bold uppercase border border-slate-200 hover:bg-indigo-50">
+                          {`S-${fmt.toUpperCase()}`}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 
