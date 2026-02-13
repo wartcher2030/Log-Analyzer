@@ -1,25 +1,35 @@
 {
-  "name": "omnilog-dashboard",
+  "name": "idealogs-dashboard",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc && vite build",
     "preview": "vite preview",
     "start": "vite preview",
-    "deploy:pages": "echo \"This repository is configured to deploy via GitHub Actions to Cloudflare Pages. See README.md for setup steps.\""
+    "workers:dev": "wrangler dev",
+    "workers:build": "tsc --project workers/tsconfig.json",
+    "deploy:pages": "npm run build && wrangler pages deploy dist",
+    "deploy:workers": "npm run workers:build && wrangler deploy",
+    "db:init": "wrangler d1 execute idealogs --file workers/migrations/001_init.sql",
+    "type-check": "tsc --noEmit",
+    "lint:ts": "tsc --noEmit --strict",
+    "audit:fix": "npm audit fix"
   },
   "dependencies": {
+    "html-to-image": "1.11.11",
+    "jspdf": "^4.1.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "recharts": "^3.6.0",
-    "html-to-image": "1.11.11"
+    "recharts": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "itty-router": "^4.1.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "wrangler": "^3.15.0"
   }
 }

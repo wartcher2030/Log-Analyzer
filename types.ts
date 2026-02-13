@@ -2,9 +2,12 @@
 export interface LogData {
   id: string;
   fileName: string;
+  fileSize?: number;
   headers: string[];
+  rowCount?: number;
   originalRows: Record<string, any>[];
   computedRows: Record<string, any>[];
+  uploadedAt?: string;
 }
 
 export interface FormulaDefinition {
@@ -39,12 +42,23 @@ export interface PlotTemplate {
   xAxisLabel?: string;
   yAxisLabel?: string;
   xAxisType?: 'number' | 'category';
+  savedAt?: string;
+  sourceLogId?: string;
 }
 
 export interface Stats {
   min: number;
   max: number;
   mean: number;
+  stdDev?: number;
+}
+
+export interface FileUploadProgress {
+  fileIndex: number;
+  fileName: string;
+  progress: number;
+  status: 'pending' | 'loading' | 'success' | 'error';
+  error?: string;
 }
 
 export type Page = 'dashboard' | 'project' | 'templates';

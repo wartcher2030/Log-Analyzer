@@ -1,0 +1,48 @@
+name = "idealogs-dashboard"
+main = "workers/src/index.ts"
+type = "service"
+compatibility_date = "2024-01-01"
+
+# Build configuration
+[build]
+command = "npm run build && npm run build --prefix workers"
+cwd = "."
+
+# Static assets from React build
+[assets]
+directory = "dist"
+binding = "ASSETS"
+
+# D1 Database binding (Cloudflare's SQLite service for R1-like functionality)
+[[d1_databases]]
+binding = "DB"
+database_name = "idealogs_templates"
+database_id = ""
+
+# Routes - Configure your actual domain here
+[env.production]
+routes = [
+  { pattern = "yourdomain.com/api/*", zone_name = "yourdomain.com" },
+  { pattern = "yourdomain.com/*", zone_name = "yourdomain.com" }
+]
+vars = { 
+  ENVIRONMENT = "production",
+  VITE_API_BASE = "https://yourdomain.com/api"
+}
+
+[env.development]
+routes = [
+  { pattern = "localhost:8787/*" }
+]
+vars = { 
+  ENVIRONMENT = "development",
+  VITE_API_BASE = "http://localhost:8787/api"
+}
+
+# Environment variables (secrets)
+[env.production.vars]
+MAX_TEMPLATES = "1000"
+
+[[migrations]]
+tag = "v1"
+path = "migrations"

@@ -82,6 +82,51 @@ export const renderChartToCanvas = async (
 };
 
 /**
+ * Debug helper: prepare internal mapping used by canvas renderer
+ * Returns xValuesPerRow, xLabels (if categorical), and yArrays for each y axis
+ */
+export const prepareExportDebug = (
+  data: Record<string, any>[],
+  template: Partial<PlotTemplate>
+) => {
+  const xKey = template.xAxis;
+  const rawX = data.map((row) => row[xKey]);
+  const parsedXPerRow = rawX.map((v, idx) => {
+    if (v === undefined || v === null) return NaN;
+    if (typeof v === 'number') return v;
+    const n = parseFloat(String(v));
+    return Number.isFinite(n) ? n : NaN;
+  });
+
+  const allXNaN = parsedXPerRow.every((v) => Number.isNaN(v));
+  let xValuesPerRow: number[];
+  let xLabels: (string | null)[] | null = null;
+  if (allXNaN) {
+    xValuesPerRow = data.map((_, i) => i);
+    xLabels = rawX.map((v) => (v == null ? null : String(v)));
+  } else {
+    xValuesPerRow = parsedXPerRow.map((v, i) => (Number.isNaN(v) ? i : v));
+  }
+
+  const yAxes = template.yAxes || [];
+  const yArrays = yAxes.map((yKey) =>
+    data.map((row) => {
+      const val = row[yKey];
+      return typeof val === 'number' ? val : parseFloat(String(val));
+    })
+  );
+
+  return {
+    xKey,
+    xLabels,
+    xValuesPerRow,
+    yAxes,
+    yArrays,
+    sampleRows: data.slice(0, 30),
+  };
+};
+
+/**
  * Render professional header
  */
 const renderHeader = (
@@ -184,19 +229,33 @@ const renderChartContent = async (
     return;
   }
   
-  // Extract numeric values from all data points
+  // Extract numeric values from all data points, preserving index alignment.
   const xKey = template.xAxis;
-  const xValues = data.map((row, idx) => {
-    let val = row[xKey];
-    if (val === undefined || val === null) val = idx;
-    return typeof val === 'number' ? val : parseFloat(String(val));
-  }).filter(v => !isNaN(v));
-  
-  if (xValues.length === 0) return;
-  
+  const rawX = data.map((row) => row[xKey]);
+  const parsedXPerRow = rawX.map((v, idx) => {
+    if (v === undefined || v === null) return NaN;
+    if (typeof v === 'number') return v;
+    const n = parseFloat(String(v));
+    return Number.isFinite(n) ? n : NaN;
+  });
+
+  // If all x values are non-numeric, treat as ordinal categories (use indices for plotting)
+  const allXNaN = parsedXPerRow.every((v) => Number.isNaN(v));
+  let xValuesPerRow: number[];
+  let xLabels: (string | null)[] | null = null;
+  if (allXNaN) {
+    xValuesPerRow = data.map((_, i) => i);
+    xLabels = rawX.map((v) => (v == null ? null : String(v)));
+  } else {
+    // For numeric axis, replace NaN entries with their index to keep alignment
+    xValuesPerRow = parsedXPerRow.map((v, i) => (Number.isNaN(v) ? i : v));
+  }
+
+  if (xValuesPerRow.length === 0) return;
+
   // Calculate scales with better precision and padding
-  const xMin = Math.min(...xValues);
-  const xMax = Math.max(...xValues);
+  const xMin = Math.min(...xValuesPerRow);
+  const xMax = Math.max(...xValuesPerRow);
   const xRange = xMax - xMin || 1;
   const xPadding = xRange * 0.02;
   
@@ -231,13 +290,20 @@ const renderChartContent = async (
   ctx.fillStyle = '#94a3b8';
   ctx.font = `${Math.round(11 * SCALE)}px "Segoe UI", sans-serif`;
   
-  // X-axis labels
+  // X-axis labels (support numeric or categorical)
   const xTicks = 5;
   for (let i = 0; i <= xTicks; i++) {
     const val = xMin + (xRange / xTicks) * i;
     const pos = dataToPixel(val, yMin - yPadding);
     ctx.textAlign = 'center';
-    ctx.fillText(val.toFixed(1), pos.x, pos.y + Math.round(40 * SCALE));
+    if (xLabels) {
+      // Map tick position to nearest category index
+      const idx = Math.round(((val - xMin) / (xRange || 1)) * (xLabels.length - 1));
+      const lbl = xLabels[Math.max(0, Math.min(xLabels.length - 1, idx))];
+      ctx.fillText(String(lbl ?? ''), pos.x, pos.y + Math.round(40 * SCALE));
+    } else {
+      ctx.fillText(val.toFixed(1), pos.x, pos.y + Math.round(40 * SCALE));
+    }
   }
   
   // Y-axis labels
@@ -250,6 +316,13 @@ const renderChartContent = async (
   }
   
   // Draw lines for each Y axis - render ALL data points
+  // Determine draw order: numeric X -> sort by X value; categorical -> use original order
+  const indices = data.map((_, i) => i);
+  let drawOrder = indices;
+  if (!allXNaN) {
+    drawOrder = indices.slice().sort((a, b) => (xValuesPerRow[a] - xValuesPerRow[b]));
+  }
+
   template.yAxes.forEach((yKey, idx) => {
     const yValues = yArrays[idx];
     ctx.strokeStyle = colors[idx % colors.length];
@@ -257,8 +330,9 @@ const renderChartContent = async (
     ctx.beginPath();
     
     let firstPoint = true;
-    for (let i = 0; i < data.length; i++) {
-      const xVal = xValues[i];
+    for (let k = 0; k < drawOrder.length; k++) {
+      const i = drawOrder[k];
+      const xVal = xValuesPerRow[i];
       const yVal = yValues[i];
       if (!isNaN(xVal) && !isNaN(yVal)) {
         const pos = dataToPixel(xVal, yVal);
@@ -464,6 +538,92 @@ export const downloadCanvasAs = (
     link.download = `${fileName}.${format}`;
     link.click();
   }
+};
+
+/**
+ * Capture a DOM node at a target width/height using html-to-image for pixel-perfect exports.
+ * Returns a Blob for PNG/JPEG/SVG. This clones the node, scales it, captures, then cleans up.
+ */
+export const domCaptureToBlob = async (
+  node: HTMLElement,
+  targetWidth: number,
+  targetHeight: number,
+  format: 'png' | 'jpeg' | 'svg',
+  backgroundColor: string = '#ffffff',
+  quality: number = 1
+): Promise<Blob> => {
+  // dynamic import to keep bundle size small
+  const mod: any = await import('html-to-image');
+
+  // Clone node to avoid altering layout. Use an offscreen container.
+  const clone = node.cloneNode(true) as HTMLElement;
+  clone.style.width = `${node.scrollWidth}px`;
+  clone.style.height = `${node.scrollHeight}px`;
+  clone.style.boxSizing = 'border-box';
+  clone.style.background = backgroundColor;
+  clone.style.transformOrigin = 'top left';
+
+  const scaleX = targetWidth / Math.max(1, node.scrollWidth || node.clientWidth || 1);
+  const scaleY = targetHeight / Math.max(1, node.scrollHeight || node.clientHeight || 1);
+  const scale = Math.min(scaleX, scaleY);
+
+  // Apply scaling via CSS transform for the clone
+  clone.style.transform = `scale(${scale})`;
+  clone.style.pointerEvents = 'none';
+
+  // Wrap clone in a container to preserve visual bounds
+  const wrap = document.createElement('div');
+  wrap.style.position = 'fixed';
+  wrap.style.left = '-9999px';
+  wrap.style.top = '-9999px';
+  wrap.style.width = `${Math.round((node.scrollWidth || node.clientWidth) * scale)}px`;
+  wrap.style.height = `${Math.round((node.scrollHeight || node.clientHeight) * scale)}px`;
+  wrap.appendChild(clone);
+  document.body.appendChild(wrap);
+
+  try {
+    const options: any = {
+      backgroundColor,
+      width: Math.round((node.scrollWidth || node.clientWidth) * scale),
+      height: Math.round((node.scrollHeight || node.clientHeight) * scale),
+      // pixelRatio influences raster output precision
+      pixelRatio: scale,
+      style: {
+        transform: `scale(${scale})`,
+        transformOrigin: 'top left'
+      }
+    };
+
+    if (format === 'svg') {
+      // html-to-image.toSvg returns an SVG string
+      const svgString = await mod.toSvg(clone, options);
+      return new Blob([svgString], { type: 'image/svg+xml' });
+    }
+
+    if (format === 'png') {
+      const dataUrl = await mod.toPng(clone, options);
+      return dataURLToBlob(dataUrl);
+    }
+
+    // jpeg
+    const dataUrl = await mod.toJpeg(clone, { ...options, quality });
+    return dataURLToBlob(dataUrl);
+  } finally {
+    // cleanup
+    if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+  }
+};
+
+const dataURLToBlob = (dataUrl: string): Blob => {
+  const parts = dataUrl.split(',');
+  const meta = parts[0];
+  const b64 = parts[1];
+  const mime = meta.match(/:(.*?);/)?.[1] || 'image/png';
+  const bin = atob(b64);
+  const len = bin.length;
+  const u8 = new Uint8Array(len);
+  for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+  return new Blob([u8], { type: mime });
 };
 
 /**

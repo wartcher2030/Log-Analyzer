@@ -41,6 +41,41 @@ export const parseCSV = async (file: File): Promise<LogData> => {
   });
 };
 
+/**
+ * Parse multiple CSV files in parallel
+ */
+export const parseMultipleFiles = async (
+  files: File[],
+  onProgress?: (fileIndex: number, progress: number) => void
+): Promise<{ successful: LogData[]; failed: Array<{ fileName: string; error: string }> }> => {
+  const results = await Promise.allSettled(
+    files.map((file, idx) =>
+      parseCSV(file).then((data) => {
+        onProgress?.(idx, 100);
+        return { type: 'success' as const, data };
+      })
+    )
+  );
+
+  const successful:LogData[] = [];
+  const failed: Array<{ fileName: string; error: string }> = [];
+
+  results.forEach((result, idx) => {
+    if (result.status === 'fulfilled') {
+      if (result.value.type === 'success') {
+        successful.push(result.value.data);
+      }
+    } else {
+      failed.push({
+        fileName: files[idx].name,
+        error: String(result.reason)
+      });
+    }
+  });
+
+  return { successful, failed };
+};
+
 export const calculateStats = (data: Record<string, any>[], column: string): Stats | null => {
   const values = data
     .map(row => row[column])
